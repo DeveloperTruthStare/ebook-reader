@@ -1,30 +1,137 @@
 package main
 
 import (
-	"archive/zip"
 	"fmt"
-	"io"
 	"log"
 	"os"
-	"path/filepath"
+	"strings"
+	"unicode"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/taylorskalyo/goreader/epub"
 	"golang.org/x/net/html"
 )
 
-func printText(n *html.Node) {
-	if n.Type == html.TextNode {
-		fmt.Print(n.Data)
+func IsWhitespaceOnly(text string) bool {
+	for _, r := range text {
+		if !unicode.IsSpace(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func printText(n *html.Node, book *ULLABook) string {
+	toReturn := ""
+	if n.Data == "head" {
+		return ""
+	}
+	if n.Data == "body" {
+		for _, d := range n.Attr {
+			if d.Key == "class" {
+				if d.Val == "p-caution" || d.Val == "p-colophon" {
+					return ""
+				}
+			}
+		}
+	}
+	if n.Type == html.ElementNode && n.Data == "p" {
+		book.chunks = append(book.chunks, Chunk{isImage: false, text: ""})
+	}
+	if n.Type == html.ElementNode && n.Data == "img" {
+		book.chunks[len(book.chunks)-1].isImage = true
+		for _, d := range n.Attr {
+			if d.Key == "src" {
+				toReturn += d.Val
+			}
+		}
+	}
+	if n.Type == html.ElementNode && n.Data == "ruby" {
+		var kanjiText string
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if c.Type == html.TextNode {
+				kanjiText += c.Data
+			} else if c.Type == html.ElementNode && c.Data == "rt" {
+				continue
+			}
+		}
+		if kanjiText != "" {
+			toReturn += kanjiText
+		}
+	} else if n.Type == html.TextNode {
+		text := n.Data
+
+		if IsWhitespaceOnly(text) {
+			return ""
+		}
+
+		toReturn += strings.TrimSpace(text)
+	} else {
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			toReturn += printText(c, book)
+		}
+		if n.Type == html.ElementNode && n.Data == "p" {
+
+			book.chunks[len(book.chunks)-1].text = toReturn
+
+			if len(strings.TrimSpace(toReturn)) <= 0 {
+				book.chunks = book.chunks[:len(book.chunks)-1]
+			} else {
+
+			}
+
+			toReturn = ""
+		}
 	}
 
-	// Recursively traverse the child nodes
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		printText(c)
+	return toReturn
+}
+
+type ULLABook struct {
+	book   *epub.Rootfile
+	chunks []Chunk
+}
+
+type Chunk struct {
+	isImage bool
+	text    string
+}
+
+func AnalyzeBook(book *epub.Rootfile) (*ULLABook, error) {
+	formattedBook := ULLABook{book: book}
+
+	for _, section := range book.Spine.Itemrefs {
+		f, err := section.Open()
+		if err != nil {
+			return nil, fmt.Errorf("Unable to open file %w", err)
+		}
+		defer f.Close()
+		doc, err := html.Parse(f)
+		if err != nil {
+			return nil, fmt.Errorf("Unable to parse file: %w", err)
+		}
+
+		printText(doc, &formattedBook)
 	}
+	f, err := os.Create("output.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, chunk := range formattedBook.chunks {
+		if chunk.isImage {
+			f.WriteString("IMAGE: ")
+		} else {
+			f.WriteString("TEXT: ")
+		}
+		f.WriteString(chunk.text + "\n")
+	}
+	f.Close()
+
+	return &formattedBook, nil
 }
 
 func main() {
+	loadedEpub := 1
 	var epubFiles []string
 
 	searchDir := "./ebooks/"
@@ -39,11 +146,7 @@ func main() {
 		}
 	}
 
-	for _, book := range epubFiles {
-		UnzipEPUB(searchDir+book+"/"+book+".epub", searchDir+book+"/unzipped/")
-	}
-
-	filename := searchDir + epubFiles[1] + "/" + epubFiles[1] + ".epub"
+	filename := searchDir + epubFiles[loadedEpub] + "/" + epubFiles[loadedEpub] + ".epub"
 
 	rc, err := epub.OpenReader(filename)
 	if err != nil {
@@ -53,65 +156,16 @@ func main() {
 
 	book := rc.Rootfiles[0]
 
-	game := Game{book: book, currentPage: 0}
+	bookULLAFormat, err := AnalyzeBook(book)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	game := Game{book: bookULLAFormat, currentPage: 0}
 	game.Init()
 
-	ebiten.SetWindowSize(4000, 4000)
+	ebiten.SetWindowSize(540, 960)
 	if err := ebiten.RunGame(&game); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func UnzipEPUB(epubPath, outputDir string) error {
-	r, err := zip.OpenReader(epubPath)
-	if err != nil {
-		return fmt.Errorf("failed to open EPUB file: %w", err)
-	}
-	defer r.Close()
-
-	for _, file := range r.File {
-		outputPath := filepath.Join(outputDir, file.Name)
-
-		if file.FileInfo().IsDir() {
-			err = os.MkdirAll(outputPath, os.ModePerm)
-			if err != nil {
-				return fmt.Errorf("failed to create directory: %w", err)
-			}
-			continue
-		}
-
-		err = os.MkdirAll(filepath.Dir(outputPath), os.ModePerm)
-		if err != nil {
-			return fmt.Errorf("failed to open file in EPUB: %w", err)
-		}
-
-		zipFile, err := file.Open()
-		if err != nil {
-			return fmt.Errorf("failed to create file: %w", err)
-		}
-		defer zipFile.Close()
-
-		outputFile, err := os.Create(outputPath)
-		if err != nil {
-			return fmt.Errorf("failed to create file: %w", err)
-		}
-		defer outputFile.Close()
-
-		_, err = io.Copy(outputFile, zipFile)
-		if err != nil {
-			return fmt.Errorf("failed to copy file contents: %w", err)
-		}
-
-	}
-
-	return nil
-}
-
-type Book struct {
-	pages []Page
-}
-
-type Page struct {
-	isImage bool
-	text    string
 }

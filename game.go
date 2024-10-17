@@ -1,21 +1,21 @@
 package main
 
 import (
-	"fmt"
 	"image"
 	"image/color"
+	_ "image/jpeg"
 	"log"
 	"os"
+	"path/filepath"
 
 	"github.com/hajimehoshi/ebiten/v2"
 	"github.com/hajimehoshi/ebiten/v2/text"
-	"github.com/taylorskalyo/goreader/epub"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
 )
 
 type Game struct {
-	book            *epub.Rootfile
+	book            *ULLABook
 	currentPage     uint
 	justPressed     bool
 	width           uint
@@ -69,26 +69,24 @@ func (g *Game) Layout(width, height int) (int, int) {
 }
 
 func (g *Game) Draw(screen *ebiten.Image) {
-
-	for _, item := range g.book.Manifest.Items {
-		if item.MediaType == "image/jpeg" {
-			fmt.Println(item.HREF)
-			f, err := item.Open()
-			if err != nil {
-				log.Fatal(err)
+	if g.book.chunks[g.currentPage].isImage {
+		for _, img := range g.book.book.Manifest.Items {
+			if filepath.Base(img.HREF) == filepath.Base(g.book.chunks[g.currentPage].text) {
+				f, err := img.Open()
+				if err != nil {
+					log.Fatal(err)
+				}
+				defer f.Close()
+				imgData, _, err := image.Decode(f)
+				if err != nil {
+					log.Fatal(err)
+				}
+				ebitenImg := ebiten.NewImageFromImage(imgData)
+				screen.DrawImage(ebitenImg, &ebiten.DrawImageOptions{})
+				return
 			}
-			defer f.Close()
-			imgData, format, err := image.Decode(f)
-			if err != nil {
-				log.Fatal(err)
-			}
-			fmt.Println(format)
-			ebitenImg := ebiten.NewImageFromImage(imgData)
-			screen.DrawImage(ebitenImg, &ebiten.DrawImageOptions{})
-			break
 		}
+	} else {
+		text.Draw(screen, g.book.chunks[g.currentPage].text, g.mplusNormalFont, 50, 100, color.White)
 	}
-
-	msg := "こんにちは、世界"
-	text.Draw(screen, msg, g.mplusNormalFont, 50, 100, color.White)
 }
